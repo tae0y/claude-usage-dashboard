@@ -1,0 +1,377 @@
+---
+name: planning
+description: Planning work in small, known-good increments. Use when starting significant work or breaking down complex tasks.
+---
+
+# Planning in Small Increments
+
+**All work must be done in small, known-good increments.** Each increment leaves the codebase in a working state where all tests pass.
+
+**Document Management**:
+- Long-term plan: `localdocs/plan.<topic>.md`
+- Future (not yet planned): `localdocs/backlog.<topic>.md`
+- Execution logs: `worklog` skill (`localdocs/worklog.todo.md`, `localdocs/worklog.doing.md`, `localdocs/worklog.done.md`)
+- Learning notes: `localdocs/learn.<topic>.md`
+
+## Usage Boundary
+
+- Use this `planning` skill at planning time (before implementation starts).
+- During implementation execution, use `progress-guardian` to track progress/learning snapshots and step-by-step status.
+- During RED/GREEN/REFACTOR test loops, use `tdd-guardian`.
+
+## Plan + Worklog + Learn Model
+
+For significant work, maintain one long-term plan, worklog files, and a learning note:
+
+| Document | Purpose | Lifecycle |
+|----------|---------|-----------|
+| **`localdocs/backlog.<topic>.md`** | Future ideas before planning | Optional, persistent |
+| **`localdocs/plan.<topic>.md`** | What we're doing | Created at start, changes need approval |
+| **`localdocs/worklog.todo.md`** | Pending phase/session tasks | Persistent |
+| **`localdocs/worklog.doing.md`** | In-progress phase/session tasks | Persistent |
+| **`localdocs/worklog.done.md`** | Completed phase/session log | Persistent |
+| **`localdocs/learn.<topic>.md`** | Learning notes / gotchas / decisions | Scoped to a topic; merged into CLAUDE.md/ADR, kept as reference |
+
+### Document Relationships
+
+```
+`localdocs/plan.<topic>.md` (static)          `worklog.todo/doing/done` (execution log)           `localdocs/learn.<topic>.md` (learning notes)
+┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
+│ Goal            │       │ Current step    │       │ Gotchas         │
+│ Acceptance      │  ──►  │ Status          │  ──►  │ Patterns        │
+│ Steps 1-N       │       │ Blockers        │       │ Decisions       │
+│ (approved)      │       │ Next action     │       │ Edge cases      │
+└─────────────────┘       └─────────────────┘       └─────────────────┘
+        │                         │                         │
+        │                         │                         │
+        └─────────────────────────┴─────────────────────────┘
+                                  │
+                                  ▼
+                         END OF FEATURE
+                                  │
+                    ┌─────────────┴─────────────┐
+                    │                           │
+                    ▼                           ▼
+              Keep worklog logs        Merge learnings into:
+                                       - CLAUDE.md (`learn` agent)
+                                       - ADRs (`adr` agent)
+                                       Keep learn files as reference
+```
+
+## Phase 0: Pre-Implementation Interview
+
+Before breaking work into increments, you **MUST** complete three steps in order: declare the work stage, verify technical assumptions, then probe for implementation unknowns.
+
+**This phase catches two sources of wasted effort:**
+1. Requirements that seemed clear during PRD but reveal ambiguity at implementation time
+2. Technical assumptions (compatibility, API behavior) that turn out to be wrong mid-implementation
+
+### Step 0-A: Declare the Work Stage
+
+Ask the user to declare the stage before anything else. If already stated, confirm it.
+
+| Stage | Plan depth | Code quality | Exit criteria |
+|-------|-----------|--------------|---------------|
+| **SPIKE** | Hypothesis + exit criteria only | Working only | Hypothesis pass/fail confirmed |
+| **MVP** | Core flow + key edge cases | Basic test coverage | Core user scenario passes |
+| **PROD** | Full spec (clients, compatibility) | TDD + docs | Deployable quality |
+
+**If stage is SPIKE:**
+- Capture: "Hypothesis: [what we're testing]" and "Exit criteria: [what pass/fail looks like]"
+- Add `# SPIKE: [hypothesis] — delete after validation` comment to all SPIKE code
+- SPIKE code must NOT be promoted to PROD directly — rewrite at MVP stage
+
+**If no stage is declared, default to PROD.**
+
+### Step 0-B: Technical Feasibility Check
+
+Before the interview, use WebSearch to verify any external dependency the plan will rely on. **Do not rely on training knowledge for fast-moving ecosystems.**
+
+**Always verify when the work involves:**
+- External APIs or third-party services → confirm auth method, endpoint schema, rate limits
+- Multiple clients or platforms → confirm compatibility across all targets (web/mobile/desktop/CLI)
+- Library or framework features → confirm the feature exists in the project's current version
+- Known-tricky domains → search "[library] [feature] issues [year]" to surface gotchas
+
+**Output**: Before the interview begins, state:
+```
+Verified: [what was confirmed via search, with source]
+Unverified / TBD: [what couldn't be confirmed — flag as risk in plan]
+```
+
+If verification reveals a blocker or significant risk, surface it before proceeding to the interview.
+
+### Step 0-C: Implementation Interview
+
+With stage declared and technical assumptions verified, probe for implementation-specific unknowns. Use `AskUserQuestion`.
+
+**When to run this interview:**
+- Always, before creating `localdocs/plan.<topic>.md`
+- Even if a PRD exists — PRDs cover *what*, this covers *how*
+
+**Interview Protocol:**
+
+1. **Read all available context first.** PRD, existing code, related docs. Form your own mental model before asking.
+2. **Ask questions the user hasn't thought about yet.** Don't repeat PRD questions. Focus on implementation-specific unknowns.
+3. **2-3 rounds minimum.** Each round should surface new concerns. Stop only when the user confirms no more unknowns.
+4. **Document answers in the plan file.** Captured decisions prevent future "wait, I thought we agreed..." moments.
+
+**Interview Dimensions (implementation-focused):**
+
+- **Data Shape**: What does the actual data look like? Sample inputs/outputs? Null/empty cases?
+- **State Transitions**: What states exist? What transitions are valid? What happens on invalid transitions?
+- **Error Scenarios**: What can go wrong? What does the user see? Retry? Fail silently? Alert?
+- **Performance Boundaries**: Expected data volume? Concurrent users? Acceptable latency?
+- **Existing Code Impact**: What existing behavior changes? What must NOT change?
+- **Testing Strategy**: How do we test this? What mocks are needed? What's hard to test?
+- **Deployment Concerns**: Feature flag? Migration needed? Backward compatibility?
+
+**Anti-Patterns:**
+
+- ❌ Skipping the interview because "the PRD is detailed enough"
+- ❌ Asking generic questions instead of project-specific ones
+- ❌ Starting increments before the user confirms "the approach makes sense"
+- ❌ Treating this as a formality — if answers don't change your plan, you asked the wrong questions
+- ❌ Skipping Step 0-B because "it's a well-known library" — that's exactly when version gaps appear
+- ❌ Promoting SPIKE code to PROD without rewriting at MVP stage
+
+---
+
+## What Makes a "Known-Good Increment"
+
+Each step MUST:
+- Leave all tests passing
+- Be independently deployable
+- Have clear done criteria
+- Fit in a single commit
+- Be describable in one sentence
+
+**If you can't describe a step in one sentence, break it down further.**
+
+## Step Size Heuristics
+
+**Too big if:**
+- Takes more than one session
+- Requires multiple commits to complete
+- Has multiple "and"s in description
+- You're unsure how to test it
+- Involves more than 3 files
+
+**Right size if:**
+- One clear test case
+- One logical change
+- Can explain to someone in 30 seconds
+- Obvious when done
+- Single responsibility
+
+## TDD Integration
+
+**Every step follows RED-GREEN-REFACTOR.**
+
+```
+FOR EACH STEP:
+    │
+    ├─► RED: Write failing test FIRST
+    │   - Test describes expected behavior
+    │   - Test fails for the right reason
+    │
+    ├─► GREEN: Write MINIMUM code to pass
+    │   - No extra features
+    │   - No premature optimization
+    │   - Just make the test pass
+    │
+    ├─► REFACTOR: Assess improvements
+    │   - See `refactoring` skill
+    │   - Only if it adds value
+    │   - All tests still pass
+    │
+    └─► STOP: Wait for commit approval
+```
+
+**No exceptions. No "I'll add tests later."**
+
+## Commit Discipline
+
+**NEVER commit without user approval.**
+
+After completing a step (RED-GREEN-REFACTOR):
+
+1. Verify all tests pass
+2. Verify static analysis passes
+3. Update `localdocs/worklog.doing.md` with progress
+4. Move task states with `worklog` skill (`todo` → `doing` → `done`)
+5. Capture knowledge learnings in `localdocs/learn.<topic>.md` when discovered
+6. **STOP and ask**: "Ready to commit [description]. Approve?"
+
+Only proceed with commit after explicit approval.
+
+### Why Wait for Approval?
+
+- User maintains control of git history
+- Opportunity to review before commit
+- Prevents accidental commits of incomplete work
+- Creates natural checkpoint for discussion
+
+## `localdocs/plan.<topic>.md` Structure
+
+```markdown
+# Plan: [Feature Name]
+
+## Goal
+
+[One sentence describing the outcome]
+
+## Acceptance Criteria
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+- [ ] Criterion 3
+
+## Steps
+
+### Step 1: [One sentence description]
+
+**Test**: What failing test will we write?
+**Implementation**: What code will we write?
+**Done when**: How do we know it's complete?
+
+### Step 2: [One sentence description]
+
+**Test**: ...
+**Implementation**: ...
+**Done when**: ...
+```
+
+### Plan Changes Require Approval
+
+If the plan needs to change:
+
+1. Explain what changed and why
+2. Propose updated steps
+3. **Wait for approval** before proceeding
+
+Plans are not immutable, but changes must be explicit and approved.
+
+## `worklog` Structure
+
+Use the `worklog` skill as the source of truth for:
+- `localdocs/worklog.todo.md`
+- `localdocs/worklog.doing.md`
+- `localdocs/worklog.done.md`
+
+Do not maintain separate manual templates for these files in planning docs.
+
+### Progress Snapshot Must Always Be Accurate
+
+Update `localdocs/worklog.doing.md`:
+- When starting a new step
+- When status changes (RED → GREEN → REFACTOR)
+- When blockers appear or resolve
+- After each commit
+- At end of each session
+
+**If `localdocs/worklog.doing.md` doesn't reflect reality, update it immediately.**
+
+## `localdocs/worklog.done.md`
+
+Append-only execution history grouped by date. Update via `worklog done ...`.
+
+### Capture Execution Logs As They Occur
+
+Don't wait until the end. When you discover something:
+
+1. Record task completion in `localdocs/worklog.done.md` via `worklog done ...`
+2. Continue with current work
+3. At end of feature, use this as execution history only
+
+## `localdocs/learn.<topic>.md` Structure
+
+```markdown
+# Learnings: [Feature Name]
+
+## Gotchas
+- [What happened and why]
+
+## Patterns
+- [What worked and when to apply]
+
+## Decisions
+- [Decision + rationale + trade-offs]
+```
+
+## End of Feature
+
+When all steps are complete:
+
+1. Verify all acceptance criteria met and tests passing
+2. Merge learnings: `learn` agent (gotchas/patterns → CLAUDE.md), `adr` agent (decisions → ADR)
+3. Remove only `localdocs/plan.<topic>.md` (keep worklog and learn files)
+
+## Anti-Patterns
+
+❌ **Committing without approval**
+- Always wait for explicit "yes" before committing
+
+❌ **Steps that span multiple commits**
+- Break down further until one step = one commit
+
+❌ **Writing code before tests**
+- RED comes first, always
+
+❌ **Letting `localdocs/worklog.doing.md` become stale**
+- Update immediately when reality changes
+
+❌ **Confusing worklog and learning docs**
+- Worklog tracks execution; `learn`/`adr` capture lasting knowledge
+
+❌ **Putting future ideas directly into plan**
+- If not in current approved scope, record first in `localdocs/backlog.<topic>.md`
+
+❌ **Plans that change silently**
+- All plan changes require discussion and approval
+
+❌ **Deleting worklog files**
+- Worklog files are persistent logs and should remain
+
+## Quick Reference
+
+```
+START FEATURE
+│
+├─► Phase 0-A: Declare stage (SPIKE / MVP / PROD)
+│   └─► If SPIKE: capture hypothesis + exit criteria
+├─► Phase 0-B: Technical feasibility check (WebSearch)
+│   └─► State verified / unverified assumptions before proceeding
+├─► Phase 0-C: Pre-implementation interview (AskUserQuestion)
+│   └─► Continue until no new unknowns emerge
+├─► Create `localdocs/plan.<topic>.md` (get approval)
+├─► worklog todo  ← each step from the plan
+├─► worklog doing ← first step (do this immediately, without waiting to be asked)
+│
+│   FOR EACH STEP:
+│   │
+│   ├─► RED: Failing test
+│   ├─► GREEN: Make it pass
+│   ├─► REFACTOR: If valuable
+│   ├─► worklog done  ← completed step (do this immediately when done)
+│   ├─► worklog doing ← next step    (do this immediately after done)
+│   └─► **WAIT FOR COMMIT APPROVAL**
+│
+END FEATURE
+│
+├─► Verify all criteria met
+├─► Merge learnings (learn agent, adr agent)
+└─► Close/remove only `localdocs/plan.<topic>.md` (keep worklog files)
+```
+
+## Worklog Automation Rule
+
+Call `worklog` automatically — do not wait for the user to ask.
+
+| Moment | Command |
+|--------|---------|
+| Plan approved, first step starts | `worklog todo [step2], [step3], ...` then `worklog doing [step1]` |
+| Step completes (tests pass) | `worklog done [step]` |
+| Next step begins | `worklog doing [next step]` |
+| Blocker appears | Update `worklog.doing.md` directly with blocker note |
+| Session ends | Ensure `worklog.doing.md` reflects current reality |

@@ -7,7 +7,11 @@ authors = [
     { name = "tae0y[박태영]", email = "tae0yp@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pandas>=3.0.2",
+    "plotly>=6.6.0",
+    "streamlit>=1.56.0",
+]
 
 [dependency-groups]
 dev = [

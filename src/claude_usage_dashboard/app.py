@@ -12,7 +12,7 @@ import streamlit as st
 # Allow running via `uv run streamlit run src/claude_usage_dashboard/app.py`
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from claude_usage_dashboard.loader import load_sessions, load_sessions_from_jsonl
+from claude_usage_dashboard.loader import load_sessions, load_sessions_from_jsonl, export_raw_token_data
 
 st.set_page_config(
     page_title="Claude Code Usage Dashboard",
@@ -29,6 +29,24 @@ data_source = st.sidebar.radio(
     "Data source",
     options=["session-meta (OAuth API)", "JSONL (local estimate)"],
     index=0,
+)
+
+st.sidebar.markdown("---")
+
+# Export raw token data as a downloadable file
+@st.cache_data(show_spinner="Scanning JSONL files…")
+def _cached_export(claude_dir: str) -> tuple[bytes, int]:
+    return export_raw_token_data(claude_dir)
+
+_export_data, _export_count = _cached_export(claude_dir)
+from datetime import date as _date
+_filename = f"claude-raw-tokens-{_date.today()}.jsonl"
+st.sidebar.download_button(
+    label=f"Download raw token data ({_export_count:,} records)",
+    data=_export_data,
+    file_name=_filename,
+    mime="application/x-ndjson",
+    disabled=_export_count == 0,
 )
 
 st.sidebar.markdown("---")

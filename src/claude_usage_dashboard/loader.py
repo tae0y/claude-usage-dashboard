@@ -1,9 +1,14 @@
 """Load and parse Claude Code session-meta data from ~/.claude/usage-data/session-meta/
-or estimate token usage from ~/.claude/projects/**/*.jsonl."""
+or estimate token usage from ~/.claude/projects/**/*.jsonl.
+
+Raw token data can be saved to ~/.claude/usage-data/raw-tokens/YYYY-MM-DD.jsonl
+for later analysis by tool, context, and model.
+"""
 
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,8 +19,8 @@ import pandas as pd
 _CC_WEIGHT = 0.025   # cache_creation_input_tokens
 _CR_WEIGHT = 0.0015  # cache_read_input_tokens
 
-_MAX_FILES = 200
-_MAX_AGE_DAYS = 30
+_MAX_FILES = 1000
+_MAX_AGE_DAYS = 90
 
 
 def _project_name(raw_path: str) -> str:
@@ -220,3 +225,130 @@ def load_sessions_from_jsonl(claude_dir: str | Path = "~/.claude") -> pd.DataFra
     df["total_tokens"] = df["input_tokens"] + df["output_tokens"]
 
     return df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+
+
+def export_raw_token_data(
+    claude_dir: str | Path = "~/.claude",
+    *,
+    max_files: int = _MAX_FILES,
+    max_age_days: int = _MAX_AGE_DAYS,
+) -> tuple[bytes, int]:
+    """Parse ~/.claude/projects/**/*.jsonl and return raw token records as JSONL bytes.
+
+    Each record contains:
+        message_id, timestamp, session_id, project_dir, project_name,
+        model, input_tokens, output_tokens, cache_creation_input_tokens,
+        cache_read_input_tokens, weighted_total,
+        tools: list of {"name": str, "tool_use_id": str} for each tool_use
+               block in the assistant message
+
+    Deduplicates by message_id (keeps highest weighted_total within the scan).
+
+    Returns (jsonl_bytes, record_count).
+    """
+    import zoneinfo
+
+    base = Path(claude_dir).expanduser()
+    projects_dir = base / "projects"
+
+    if not projects_dir.exists():
+        return (b"", 0)
+
+    now = datetime.now(tz=timezone.utc)
+    cutoff_seconds = max_age_days * 86400
+
+    jsonl_files = [
+        f for f in projects_dir.rglob("*.jsonl")
+        if (now.timestamp() - f.stat().st_mtime) <= cutoff_seconds
+    ]
+    jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    jsonl_files = jsonl_files[:max_files]
+
+    # message_id -> best record (highest weighted_total)
+    run_best: dict[str, dict] = {}
+
+    for jsonl_path in jsonl_files:
+        project_dir_name = jsonl_path.parent.name
+        try:
+            lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if record.get("type") != "assistant":
+                continue
+
+            message = record.get("message") or {}
+            usage = message.get("usage") or {}
+            if not usage:
+                continue
+
+            message_id = message.get("id")
+            if not message_id:
+                continue
+
+            input_tokens = int(usage.get("input_tokens", 0))
+            output_tokens = int(usage.get("output_tokens", 0))
+            cache_creation = _parse_cache_creation_tokens(usage)
+            cache_read = int(usage.get("cache_read_input_tokens", 0))
+
+            weighted_total = (
+                input_tokens
+                + output_tokens
+                + cache_creation * _CC_WEIGHT
+                + cache_read * _CR_WEIGHT
+            )
+
+            content = message.get("content") or []
+            tools = [
+                {"name": c["name"], "tool_use_id": c["id"]}
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "tool_use"
+            ]
+
+            existing = run_best.get(message_id)
+            if existing is None or weighted_total > existing["weighted_total"]:
+                run_best[message_id] = {
+                    "message_id": message_id,
+                    "timestamp": record.get("timestamp"),
+                    "session_id": record.get("sessionId"),
+                    "project_dir": project_dir_name,
+                    "project_name": (
+                        project_dir_name.lstrip("-").rsplit("-", 1)[-1]
+                        if "-" in project_dir_name
+                        else project_dir_name
+                    ),
+                    "model": message.get("model", ""),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_creation_input_tokens": cache_creation,
+                    "cache_read_input_tokens": cache_read,
+                    "weighted_total": weighted_total,
+                    "tools": tools,
+                }
+
+    records = sorted(run_best.values(), key=lambda r: r.get("timestamp") or "")
+    if not records:
+        return b"", 0
+    lines_out = [json.dumps(r, ensure_ascii=False) for r in records]
+    return ("\n".join(lines_out) + "\n").encode("utf-8"), len(records)
+
+
+# Keep backward-compatible alias used by any external callers
+def save_raw_token_data(
+    claude_dir: str | Path = "~/.claude",
+    *,
+    max_files: int = _MAX_FILES,
+    max_age_days: int = _MAX_AGE_DAYS,
+) -> dict[str, int]:
+    """Deprecated: use export_raw_token_data() instead."""
+    data, count = export_raw_token_data(claude_dir, max_files=max_files, max_age_days=max_age_days)
+    return {"scanned": 0, "new": count, "skipped": 0}

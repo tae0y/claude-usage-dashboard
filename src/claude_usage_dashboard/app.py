@@ -12,7 +12,7 @@ import streamlit as st
 # Allow running via `uv run streamlit run src/claude_usage_dashboard/app.py`
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from claude_usage_dashboard.loader import load_sessions
+from claude_usage_dashboard.loader import load_sessions, load_sessions_from_jsonl
 
 st.set_page_config(
     page_title="Claude Code Usage Dashboard",
@@ -25,14 +25,26 @@ st.set_page_config(
 
 st.sidebar.title("Settings")
 claude_dir = st.sidebar.text_input("~/.claude path", value=str(Path.home() / ".claude"))
+data_source = st.sidebar.radio(
+    "Data source",
+    options=["session-meta (OAuth API)", "JSONL (local estimate)"],
+    index=0,
+)
 
 st.sidebar.markdown("---")
 
-df_all = load_sessions(claude_dir)
-
-if df_all.empty:
-    st.error(f"No session data found in `{claude_dir}/usage-data/session-meta/`.")
-    st.stop()
+if data_source == "JSONL (local estimate)":
+    df_all = load_sessions_from_jsonl(claude_dir)
+    _token_col = "weighted_total"
+    if df_all.empty:
+        st.error(f"No JSONL data found in `{claude_dir}/projects/`.")
+        st.stop()
+else:
+    df_all = load_sessions(claude_dir)
+    _token_col = "total_tokens"
+    if df_all.empty:
+        st.error(f"No session data found in `{claude_dir}/usage-data/session-meta/`.")
+        st.stop()
 
 # Date range filter
 min_date = df_all["date"].min()
@@ -67,11 +79,22 @@ st.caption(f"Loaded **{len(df):,}** sessions · {date_from} → {date_to}")
 # ── KPI Row ───────────────────────────────────────────────────────────────────
 
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Tokens", f"{df['total_tokens'].sum():,}")
+col1.metric("Weighted Total" if _token_col == "weighted_total" else "Total Tokens",
+            f"{df[_token_col].sum():,.1f}" if _token_col == "weighted_total" else f"{df[_token_col].sum():,}")
 col2.metric("Input Tokens", f"{df['input_tokens'].sum():,}")
 col3.metric("Output Tokens", f"{df['output_tokens'].sum():,}")
-col4.metric("Sessions", f"{len(df):,}")
-col5.metric("Total Minutes", f"{df['duration_minutes'].sum():,}")
+col4.metric("Sessions" if _token_col == "total_tokens" else "Messages", f"{len(df):,}")
+col5.metric("Total Minutes", f"{df['duration_minutes'].sum():,}" if "duration_minutes" in df.columns else "N/A")
+
+if _token_col == "weighted_total":
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Cache Creation Tokens", f"{df['cache_creation_input_tokens'].sum():,}")
+    c2.metric("Cache Read Tokens", f"{df['cache_read_input_tokens'].sum():,}")
+    c3.metric(
+        "Effective vs Raw ratio",
+        f"{df[_token_col].sum() / max(df['total_tokens'].sum(), 1):.2f}×",
+        help="weighted_total / (input+output). Shows cache contribution factor.",
+    )
 
 st.markdown("---")
 
@@ -80,8 +103,10 @@ st.markdown("---")
 
 st.subheader("Daily Token Usage")
 
+_daily_cols = ["input_tokens", "output_tokens", _token_col]
+_daily_cols = list(dict.fromkeys(_daily_cols))  # dedupe while preserving order
 daily = (
-    df.groupby("date")[["input_tokens", "output_tokens", "total_tokens"]]
+    df.groupby("date")[[c for c in _daily_cols if c in df.columns]]
     .sum()
     .reset_index()
     .sort_values("date")
@@ -108,18 +133,18 @@ col_a, col_b = st.columns(2)
 
 with col_a:
     by_project = (
-        df.groupby("project_name")["total_tokens"]
+        df.groupby("project_name")[_token_col]
         .sum()
         .reset_index()
-        .sort_values("total_tokens", ascending=False)
+        .sort_values(_token_col, ascending=False)
     )
     fig_proj = px.bar(
         by_project,
-        x="total_tokens",
+        x=_token_col,
         y="project_name",
         orientation="h",
-        labels={"total_tokens": "Total Tokens", "project_name": "Project"},
-        color="total_tokens",
+        labels={_token_col: "Tokens", "project_name": "Project"},
+        color=_token_col,
         color_continuous_scale="Blues",
     )
     fig_proj.update_layout(showlegend=False, height=max(300, len(by_project) * 28 + 60))
@@ -128,7 +153,7 @@ with col_a:
 with col_b:
     fig_pie = px.pie(
         by_project,
-        values="total_tokens",
+        values=_token_col,
         names="project_name",
         hole=0.4,
         title="Share by Project",
@@ -142,7 +167,7 @@ with col_b:
 st.subheader("Session Count Heatmap (Day × Project)")
 
 pivot = (
-    df.groupby(["date", "project_name"])["total_tokens"]
+    df.groupby(["date", "project_name"])[_token_col]
     .sum()
     .unstack(fill_value=0)
 )
@@ -162,7 +187,7 @@ if not pivot.empty:
 st.subheader("Tool Usage Across Sessions")
 
 tool_counts: dict[str, int] = {}
-for raw in df["tool_counts"].dropna():
+for raw in df["tool_counts"].dropna() if "tool_counts" in df.columns else []:
     if isinstance(raw, dict):
         for tool, cnt in raw.items():
             tool_counts[tool] = tool_counts.get(tool, 0) + int(cnt)
@@ -189,15 +214,24 @@ if tool_counts:
 
 st.subheader("Session Details")
 
-display_cols = [
-    "date", "project_name", "total_tokens", "input_tokens", "output_tokens",
-    "duration_minutes", "user_message_count", "assistant_message_count",
-    "files_modified", "lines_added", "lines_removed",
-    "git_commits", "tool_errors", "first_prompt",
-]
+if _token_col == "weighted_total":
+    display_cols = [
+        "date", "project_name", "model", "weighted_total",
+        "input_tokens", "output_tokens",
+        "cache_creation_input_tokens", "cache_read_input_tokens",
+        "session_id", "message_id",
+    ]
+else:
+    display_cols = [
+        "date", "project_name", "total_tokens", "input_tokens", "output_tokens",
+        "duration_minutes", "user_message_count", "assistant_message_count",
+        "files_modified", "lines_added", "lines_removed",
+        "git_commits", "tool_errors", "first_prompt",
+    ]
 available = [c for c in display_cols if c in df.columns]
 
-sort_col = st.selectbox("Sort by", options=["total_tokens", "date", "duration_minutes"], index=0)
+_sort_options = [_token_col, "date"] + (["duration_minutes"] if "duration_minutes" in df.columns else [])
+sort_col = st.selectbox("Sort by", options=_sort_options, index=0)
 asc = st.checkbox("Ascending", value=False)
 
 show_df = df[available].sort_values(sort_col, ascending=asc).reset_index(drop=True)

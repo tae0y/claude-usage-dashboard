@@ -165,13 +165,17 @@ def load_sessions_from_jsonl(claude_dir: str | Path = "~/.claude") -> pd.DataFra
                 session_id = record.get("sessionId", "")
                 if session_id and session_id not in session_first_prompt:
                     content = (record.get("message") or {}).get("content") or []
-                    texts = [
-                        c.get("text", "")
-                        for c in content
-                        if isinstance(c, dict) and c.get("type") == "text"
-                        and not (c.get("text", "")).startswith("<")
-                    ]
-                    prompt = " ".join(t.strip() for t in texts if t.strip())
+                    if isinstance(content, str):
+                        # content가 문자열인 경우 (local-command-caveat 등)
+                        prompt = "" if content.startswith("<") else content.strip()
+                    else:
+                        texts = [
+                            c.get("text", "")
+                            for c in content
+                            if isinstance(c, dict) and c.get("type") == "text"
+                            and not (c.get("text", "")).startswith("<")
+                        ]
+                        prompt = " ".join(t.strip() for t in texts if t.strip())
                     if prompt:
                         session_first_prompt[session_id] = prompt
 

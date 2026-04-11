@@ -10,6 +10,7 @@ Reads ~/.claude/projects/<project-dir>/**/*.jsonl and outputs:
 Usage:
     uv run python scripts/analyze_project_sessions.py --project TIL
     uv run python scripts/analyze_project_sessions.py --project TIL --days 60 --format json
+    uv run python scripts/analyze_project_sessions.py --project TIL --skill readwise-digest
     uv run python scripts/analyze_project_sessions.py --list-projects
 """
 
@@ -71,12 +72,26 @@ def _find_project_dirs(
 
 # ── core analysis ─────────────────────────────────────────────────────────────
 
+def _session_contains_skill(jsonl_path: Path, skill: str) -> bool:
+    """Return True if any line in the JSONL file mentions the given skill name."""
+    try:
+        text = jsonl_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return skill in text
+
+
 def analyze(
     claude_dir: Path,
     project_keyword: str,
     days: int,
+    skill: str | None = None,
 ) -> dict:
-    """Return analysis dict for a project over the last `days` days."""
+    """Return analysis dict for a project over the last `days` days.
+
+    If `skill` is given, only sessions whose JSONL file mentions that skill string
+    are included in the analysis.
+    """
     projects_dir = claude_dir / "projects"
     if not projects_dir.exists():
         print(f"ERROR: {projects_dir} does not exist", file=sys.stderr)
@@ -93,14 +108,17 @@ def analyze(
     # Collect JSONL files across all matching dirs
     jsonl_files: list[Path] = []
     for pdir in project_dirs:
-        jsonl_files.extend(
-            f for f in pdir.rglob("*.jsonl")
-            if f.stat().st_mtime >= cutoff_ts
-        )
+        for f in pdir.rglob("*.jsonl"):
+            if f.stat().st_mtime < cutoff_ts:
+                continue
+            if skill and not _session_contains_skill(f, skill):
+                continue
+            jsonl_files.append(f)
 
     if not jsonl_files:
+        qualifier = f" with skill '{skill}'" if skill else ""
         print(
-            f"No JSONL files found for '{project_keyword}' in the last {days} days",
+            f"No JSONL files found for '{project_keyword}'{qualifier} in the last {days} days",
             file=sys.stderr,
         )
         sys.exit(0)
@@ -238,6 +256,7 @@ def analyze(
             "project_keyword": project_keyword,
             "matched_dirs": [str(d.name) for d in project_dirs],
             "days": days,
+            "skill_filter": skill,
             "total_sessions": len(sessions),
             "total_messages": len(seen_msg_ids),
             "jsonl_files_scanned": len(jsonl_files),
@@ -263,6 +282,8 @@ def print_text(data: dict) -> None:
     print(f"  PROJECT ANALYSIS: {meta['project_keyword'].upper()}")
     print(f"  Dirs   : {', '.join(meta['matched_dirs'])}")
     print(f"  Period : last {meta['days']} days")
+    if meta.get("skill_filter"):
+        print(f"  Skill  : {meta['skill_filter']}")
     print(f"  Files  : {meta['jsonl_files_scanned']} JSONL scanned")
     print(f"  Sessions: {meta['total_sessions']}  Messages: {meta['total_messages']}")
     print("=" * 70)
@@ -389,6 +410,11 @@ def main() -> None:
         help="Path to ~/.claude directory (default: ~/.claude)",
     )
     parser.add_argument(
+        "--skill", "-s",
+        default=None,
+        help="Filter to sessions that mention this skill name (e.g. readwise-digest)",
+    )
+    parser.add_argument(
         "--list-projects",
         action="store_true",
         help="List all available project directories and exit",
@@ -401,7 +427,7 @@ def main() -> None:
         list_projects(claude_dir)
         return
 
-    data = analyze(claude_dir, args.project, args.days)
+    data = analyze(claude_dir, args.project, args.days, skill=args.skill)
 
     if args.format == "json":
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))

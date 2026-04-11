@@ -141,6 +141,8 @@ def load_sessions_from_jsonl(claude_dir: str | Path = "~/.claude") -> pd.DataFra
 
     # message_id -> best record (highest weighted_total)
     best: dict[str, dict] = {}
+    # session_id -> first user prompt text
+    session_first_prompt: dict[str, str] = {}
 
     for jsonl_path in jsonl_files:
         project_dir_name = jsonl_path.parent.name  # e.g. "-Users-foo-10-SrcHub-myproject"
@@ -157,6 +159,21 @@ def load_sessions_from_jsonl(claude_dir: str | Path = "~/.claude") -> pd.DataFra
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+            # Capture the first human message in the session (parentUuid == null)
+            if record.get("type") == "user" and record.get("parentUuid") is None:
+                session_id = record.get("sessionId", "")
+                if session_id and session_id not in session_first_prompt:
+                    content = (record.get("message") or {}).get("content") or []
+                    texts = [
+                        c.get("text", "")
+                        for c in content
+                        if isinstance(c, dict) and c.get("type") == "text"
+                        and not (c.get("text", "")).startswith("<")
+                    ]
+                    prompt = " ".join(t.strip() for t in texts if t.strip())
+                    if prompt:
+                        session_first_prompt[session_id] = prompt
 
             if record.get("type") != "assistant":
                 continue
@@ -201,6 +218,9 @@ def load_sessions_from_jsonl(claude_dir: str | Path = "~/.claude") -> pd.DataFra
         return pd.DataFrame()
 
     df = pd.DataFrame(best.values())
+
+    # Attach first prompt per session
+    df["first_prompt"] = df["session_id"].map(session_first_prompt).fillna("")
 
     # Derive project name from encoded dir name
     df["project_name"] = df["project_dir"].apply(

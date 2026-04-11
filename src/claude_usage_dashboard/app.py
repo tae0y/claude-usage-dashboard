@@ -234,7 +234,7 @@ st.subheader("Session Details")
 
 if _token_col == "weighted_total":
     display_cols = [
-        "date", "project_name", "model", "weighted_total",
+        "date", "project_name", "first_prompt", "model", "weighted_total",
         "input_tokens", "output_tokens",
         "cache_creation_input_tokens", "cache_read_input_tokens",
         "session_id", "message_id",

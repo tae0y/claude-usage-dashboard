@@ -15,6 +15,19 @@ When starting a session in this project, read in this order:
 
 ---
 
+## Approach
+
+- Think before acting. Read existing files before writing code.
+- Be concise in output but thorough in reasoning.
+- Prefer editing over rewriting whole files.
+- Do not re-read files you have already read unless the file may have changed.
+- Test your code before declaring done.
+- No sycophantic openers or closing fluff.
+- Keep solutions simple and direct.
+- User instructions always override this file.
+
+---
+
 ## Project Context
 
 Claude API 사용 현황(토큰 수, 비용, 모델별 분포 등)을 수집하고 대시보드로 제공하는 Python 프로젝트.

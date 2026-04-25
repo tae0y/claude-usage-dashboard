@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -27,7 +28,7 @@ st.sidebar.title("Settings")
 claude_dir = st.sidebar.text_input("~/.claude path", value=str(Path.home() / ".claude"))
 data_source = st.sidebar.radio(
     "Data source",
-    options=["session-meta (OAuth API)", "JSONL (local estimate)"],
+    options=["JSONL (local estimate)", "session-meta (OAuth API)"],
     index=0,
 )
 
@@ -39,8 +40,7 @@ def _cached_export(claude_dir: str) -> tuple[bytes, int]:
     return export_raw_token_data(claude_dir)
 
 _export_data, _export_count = _cached_export(claude_dir)
-from datetime import date as _date
-_filename = f"claude-raw-tokens-{_date.today()}.jsonl"
+_filename = f"claude-raw-tokens-{date.today()}.jsonl"
 st.sidebar.download_button(
     label=f"Download raw token data ({_export_count:,} records)",
     data=_export_data,
@@ -64,12 +64,17 @@ else:
         st.error(f"No session data found in `{claude_dir}/usage-data/session-meta/`.")
         st.stop()
 
-# Date range filter
+# Date range filter — default to current month 1st ~ today
+_today = date.today()
+_month_start = _today.replace(day=1)
 min_date = df_all["date"].min()
 max_date = df_all["date"].max()
 
-date_from = st.sidebar.date_input("From", value=min_date, min_value=min_date, max_value=max_date)
-date_to = st.sidebar.date_input("To", value=max_date, min_value=min_date, max_value=max_date)
+_default_from = max(min_date, _month_start)
+_default_to = min(max_date, _today)
+
+date_from = st.sidebar.date_input("From", value=_default_from, min_value=min_date, max_value=max_date)
+date_to = st.sidebar.date_input("To", value=_default_to, min_value=min_date, max_value=max_date)
 
 # Project filter
 all_projects = sorted(df_all["project_name"].unique())
@@ -147,37 +152,33 @@ st.plotly_chart(fig_daily, use_container_width=True)
 
 st.subheader("Token Usage by Project")
 
-col_a, col_b = st.columns(2)
+by_project = (
+    df.groupby("project_name")[_token_col]
+    .sum()
+    .reset_index()
+    .sort_values(_token_col, ascending=False)
+)
+fig_proj = px.bar(
+    by_project,
+    x=_token_col,
+    y="project_name",
+    orientation="h",
+    labels={_token_col: "Tokens", "project_name": "Project"},
+    color=_token_col,
+    color_continuous_scale="Blues",
+)
+fig_proj.update_layout(showlegend=False, height=max(300, len(by_project) * 28 + 60))
+st.plotly_chart(fig_proj, use_container_width=True)
 
-with col_a:
-    by_project = (
-        df.groupby("project_name")[_token_col]
-        .sum()
-        .reset_index()
-        .sort_values(_token_col, ascending=False)
-    )
-    fig_proj = px.bar(
-        by_project,
-        x=_token_col,
-        y="project_name",
-        orientation="h",
-        labels={_token_col: "Tokens", "project_name": "Project"},
-        color=_token_col,
-        color_continuous_scale="Blues",
-    )
-    fig_proj.update_layout(showlegend=False, height=max(300, len(by_project) * 28 + 60))
-    st.plotly_chart(fig_proj, use_container_width=True)
-
-with col_b:
-    fig_pie = px.pie(
-        by_project,
-        values=_token_col,
-        names="project_name",
-        hole=0.4,
-        title="Share by Project",
-    )
-    fig_pie.update_layout(height=400)
-    st.plotly_chart(fig_pie, use_container_width=True)
+fig_pie = px.pie(
+    by_project,
+    values=_token_col,
+    names="project_name",
+    hole=0.4,
+    title="Share by Project",
+)
+fig_pie.update_layout(height=400)
+st.plotly_chart(fig_pie, use_container_width=True)
 
 
 # ── Sessions Over Time Heatmap ────────────────────────────────────────────────
@@ -198,6 +199,52 @@ if not pivot.empty:
     )
     fig_heat.update_layout(height=max(300, len(pivot.columns) * 30 + 80))
     st.plotly_chart(fig_heat, use_container_width=True)
+
+
+# ── Weekday × Hour Heatmap ────────────────────────────────────────────────────
+
+st.subheader("Usage by Weekday & Hour (KST)")
+
+_ts_col = "timestamp" if "timestamp" in df.columns else ("start_time" if "start_time" in df.columns else None)
+if _ts_col:
+    _ts = pd.to_datetime(df[_ts_col], utc=True, errors="coerce").dt.tz_convert("Asia/Seoul")
+    _wday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    _wday_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+    _heat_df = df[[_token_col]].copy()
+    _heat_df["weekday"] = _ts.dt.dayofweek.map(_wday_map)
+    _heat_df["slot"] = _ts.dt.hour * 6 + _ts.dt.minute // 10  # 0–143
+    _heat_df = _heat_df.dropna(subset=["weekday", "slot"])
+    _heat_df["slot"] = _heat_df["slot"].astype(int)
+
+    # x=10-min slot (06:00 ~ 05:50), y=weekday (Mon at top)
+    _all_slots = list(range(144))
+    _slot_order = list(range(6 * 6, 144)) + list(range(0, 6 * 6))  # start at 06:00
+    _pivot_wh = (
+        _heat_df.groupby(["weekday", "slot"])[_token_col]
+        .sum()
+        .unstack(fill_value=0)
+        .reindex(index=_wday_order)
+    )
+    _pivot_wh = _pivot_wh.reindex(columns=_all_slots, fill_value=0).iloc[:, _slot_order]
+
+    # x-axis labels: show HH:00 at :00 slots, empty otherwise
+    _slot_labels = [
+        f"{s // 6:02d}:00" if s % 6 == 0 else ""
+        for s in _slot_order
+    ]
+
+    _fig_wh = px.imshow(
+        _pivot_wh,
+        labels={"x": "Hour (KST)", "y": "Weekday", "color": "Tokens"},
+        x=_slot_labels,
+        y=_wday_order,
+        aspect="auto",
+        color_continuous_scale="YlOrRd",
+    )
+    _fig_wh.update_layout(height=320)
+    st.plotly_chart(_fig_wh, use_container_width=True)
+else:
+    st.info("Timestamp data not available for weekday/hour heatmap.")
 
 
 # ── Tool Usage ────────────────────────────────────────────────────────────────
@@ -253,6 +300,8 @@ sort_col = st.selectbox("Sort by", options=_sort_options, index=0)
 asc = st.checkbox("Ascending", value=False)
 
 show_df = df[available].sort_values(sort_col, ascending=asc).reset_index(drop=True)
+if "weighted_total" in show_df.columns:
+    show_df["weighted_total"] = show_df["weighted_total"].round(0).astype(int)
 # Truncate first_prompt for readability
 if "first_prompt" in show_df.columns:
     show_df["first_prompt"] = show_df["first_prompt"].astype(str).str[:80]

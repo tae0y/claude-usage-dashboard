@@ -49,6 +49,17 @@ st.sidebar.download_button(
     disabled=_export_count == 0,
 )
 
+_backup_root = Path(claude_dir) / "backups"
+_backup_days = (
+    sorted(d for d in _backup_root.iterdir() if d.is_dir() and d.name[:4].isdigit())
+    if _backup_root.exists() else []
+)
+if _backup_days:
+    st.sidebar.info(
+        f"Backup snapshots found: **{len(_backup_days)}** days "
+        f"({_backup_days[0].name} → {_backup_days[-1].name})"
+    )
+
 st.sidebar.markdown("---")
 
 if data_source == "JSONL (local estimate)":

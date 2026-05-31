@@ -33,27 +33,53 @@ def _project_name(raw_path: str) -> str:
     return Path(raw_path).name
 
 
+def _collect_session_meta_files(base: Path) -> list[Path]:
+    """Return session-meta JSON files from live dir + all backup snapshots."""
+    files: list[Path] = []
+    live = base / "usage-data" / "session-meta"
+    if live.exists():
+        files.extend(sorted(live.glob("*.json")))
+    backup_root = base / "backups"
+    if backup_root.exists():
+        for day_dir in sorted(d for d in backup_root.iterdir() if d.is_dir() and d.name[:4].isdigit()):
+            bsm = day_dir / "session-meta"
+            if bsm.is_dir():
+                files.extend(sorted(bsm.glob("*.json")))
+    return files
+
+
 def load_sessions(claude_dir: str | Path = "~/.claude") -> pd.DataFrame:
     """Read all session-meta JSON files and return a flat DataFrame.
+
+    Scans both the live directory and any backup snapshots under
+    ~/.claude/backups/*/session-meta/. Deduplicates by session_id so that
+    sessions present in multiple snapshots are counted only once.
 
     Each file may be a pretty-printed JSON object (single session).
     Some files contain multiple top-level JSON objects separated by whitespace —
     we handle that by trying multi-object streaming parse as a fallback.
     """
     base = Path(claude_dir).expanduser()
-    meta_dir = base / "usage-data" / "session-meta"
+    meta_files = _collect_session_meta_files(base)
 
-    if not meta_dir.exists():
+    if not meta_files:
         return pd.DataFrame()
 
+    seen_ids: set[str] = set()
     records: list[dict] = []
 
-    for f in sorted(meta_dir.glob("*.json")):
+    for f in meta_files:
         text = f.read_text(encoding="utf-8")
         # Fast path: single JSON object
         try:
             obj = json.loads(text)
-            records.append(obj)
+            if isinstance(obj, dict):
+                sid = obj.get("session_id", "")
+                if sid and sid in seen_ids:
+                    continue
+                if sid:
+                    seen_ids.add(sid)
+                records.append(obj)
             continue
         except json.JSONDecodeError:
             pass
@@ -65,7 +91,11 @@ def load_sessions(claude_dir: str | Path = "~/.claude") -> pd.DataFrame:
             try:
                 obj, idx = decoder.raw_decode(text, pos)
                 if isinstance(obj, dict):
-                    records.append(obj)
+                    sid = obj.get("session_id", "")
+                    if not sid or sid not in seen_ids:
+                        if sid:
+                            seen_ids.add(sid)
+                        records.append(obj)
                 pos = idx
                 # skip whitespace
                 while pos < len(text) and text[pos] in " \t\n\r":
@@ -131,13 +161,25 @@ def load_sessions_from_jsonl(claude_dir: str | Path = "~/.claude") -> pd.DataFra
     now = datetime.now(tz=timezone.utc)
     cutoff_seconds = _MAX_AGE_DAYS * 86400
 
-    # Collect JSONL files, filter by age, sort newest first
+    # Live JSONL files — filtered by mtime, newest first, capped at _MAX_FILES
     jsonl_files = [
         f for f in projects_dir.rglob("*.jsonl")
         if (now.timestamp() - f.stat().st_mtime) <= cutoff_seconds
     ]
     jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     jsonl_files = jsonl_files[:_MAX_FILES]
+
+    # Backup JSONL files — no age filter; record-level dedup handles overlaps
+    live_set: set[Path] = set(jsonl_files)
+    backup_root = base / "backups"
+    if backup_root.exists():
+        for day_dir in sorted(d for d in backup_root.iterdir() if d.is_dir() and d.name[:4].isdigit()):
+            bp = day_dir / "projects"
+            if bp.is_dir():
+                for f in bp.rglob("*.jsonl"):
+                    if f not in live_set:
+                        jsonl_files.append(f)
+                        live_set.add(f)
 
     # message_id -> best record (highest weighted_total)
     best: dict[str, dict] = {}
@@ -287,6 +329,18 @@ def export_raw_token_data(
     ]
     jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     jsonl_files = jsonl_files[:max_files]
+
+    # Backup JSONL files
+    _live_set: set[Path] = set(jsonl_files)
+    backup_root = base / "backups"
+    if backup_root.exists():
+        for day_dir in sorted(d for d in backup_root.iterdir() if d.is_dir() and d.name[:4].isdigit()):
+            bp = day_dir / "projects"
+            if bp.is_dir():
+                for f in bp.rglob("*.jsonl"):
+                    if f not in _live_set:
+                        jsonl_files.append(f)
+                        _live_set.add(f)
 
     # message_id -> best record (highest weighted_total)
     run_best: dict[str, dict] = {}
